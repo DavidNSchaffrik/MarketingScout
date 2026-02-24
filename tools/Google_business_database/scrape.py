@@ -13,8 +13,11 @@ async def main():
 
         soup = BeautifulSoup(html_snapshot, "html.parser")
         cards = soup.select(".VkpGBb")
-        with open("test.html", "w", encoding="utf-8") as f:
-            f.write(str(cards))
+
+        for card in cards:
+            name = card.select_one(".OSrXXb")
+            print(name.get_text(strip=True))
+
 
 
 asyncio.run(main())
