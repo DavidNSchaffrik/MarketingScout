@@ -1,6 +1,7 @@
 import asyncio
 from pydoll.browser.chromium import Chrome
 from bs4 import BeautifulSoup
+import re
 
 
 async def main():
@@ -15,8 +16,25 @@ async def main():
         cards = soup.select(".VkpGBb")
 
         for card in cards:
-            name = card.select_one(".OSrXXb")
-            print(name.get_text(strip=True))
+            name = card.select_one(".OSrXXb").get_text(strip=True)
+
+            PHONE_RE = re.compile(
+                                    r"""
+                                    (?<!\d)                 # don't start in the middle of a number
+                                    (?:\+?\d{1,3}[\s.-]?)?  # optional country code
+                                    (?:\(?\d{2,4}\)?[\s.-]?){1,3}  # area / carrier codes
+                                    \d{3,4}                 # local prefix
+                                    [\s.-]?
+                                    \d{3,4}                 # local line number
+                                    (?!\d)                  # don't end in the middle of a number
+                                    """,
+                                    re.VERBOSE
+                                )
+            text = card.get_text(" ", strip=True)
+            matches = PHONE_RE.findall(text)
+            phones = [m.strip() for m in matches]
+ 
+            
 
 
 
