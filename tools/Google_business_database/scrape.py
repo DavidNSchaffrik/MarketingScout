@@ -33,9 +33,17 @@ async def main():
             text = card.get_text(" ", strip=True)
             matches = PHONE_RE.findall(text)
             phones = [m.strip() for m in matches]
- 
-            
-
+            link_element = card.select_one(".yYlJEf.Q7PwXb.L48Cpd.brKmxb")
+            if link_element and link_element.get('href'):
+                website = link_element.get('href').strip()
+            else:
+                website = "No Website Listed"
+            years_in_business_match = re.search(r"(\d+)\+?\s+years in business", text, re.IGNORECASE)
+            if years_in_business_match:
+                years_value = years_in_business_match.group(1) 
+                years_value = int(years_value) 
+            else:
+                years_value = None
 
 
 asyncio.run(main())
