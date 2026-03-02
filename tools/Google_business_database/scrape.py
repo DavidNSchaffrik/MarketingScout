@@ -71,6 +71,7 @@ def init_db(db_path="leads.sqlite3"):
             website TEXT NOT NULL,
             phones TEXT,
             years_in_business INTEGER,
+            email TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             UNIQUE(name, website)
         )
@@ -78,7 +79,6 @@ def init_db(db_path="leads.sqlite3"):
 
     conn.commit()
     conn.close()
-
 
 def save_results(results, db_path="leads.sqlite3"):
     conn = sqlite3.connect(db_path)
