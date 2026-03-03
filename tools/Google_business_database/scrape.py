@@ -2,7 +2,7 @@ import asyncio
 import re
 import sqlite3
 import logging
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -29,6 +29,27 @@ YEARS_RE = re.compile(r"(\d+)\+?\s+years in business", re.IGNORECASE)
 
 NO_MORE_PLACES_TEXT = "It looks like there aren't any 'Places' matches on this topic"
 
+# ---- Email quality filters ----
+PLACEHOLDER_DOMAINS = {
+    "example.com", "example.org", "example.net",
+    "domain.com", "domain.org", "domain.net",
+    "yourdomain.com", "your-company.com", "company.com",
+    "email.com", "test.com", "localhost",
+}
+PLACEHOLDER_LOCALPARTS = {
+    "example", "test", "testing", "name", "yourname", "youremail", "email",
+    "user", "username",
+}
+BAD_INBOX_PREFIXES = ("noreply", "no-reply", "donotreply", "do-not-reply", "mailer-daemon")
+BAD_DOMAINS_SUBSTRINGS = (
+    "sentry",         # wix/next sentry noise: <hash>@sentry.wixpress.com
+    "wixpress",       # same family
+)
+GOOD_INBOX_LOCALPARTS = (
+    "info", "contact", "hello", "enquiries", "inquiries", "sales", "support",
+    "bookings", "office", "accounts", "service", "orders", "shop",
+)
+
 
 # ---------------- UTILS ----------------
 def looks_like_consent_page(html: str) -> bool:
@@ -53,18 +74,12 @@ async def fetch_html_browser(tab, url: str, wait_seconds: float = 1.2) -> str:
 
 # ---------------- CONSENT CLICK (PYDOLL) ----------------
 async def accept_google_consent_if_present(tab) -> bool:
-    """
-    Uses Pydoll's tab.find(...) per docs. :contentReference[oaicite:2]{index=2}
-    Clicks the exact button you showed: aria-label="Accept all"
-    """
     html = await tab.page_source
     if not looks_like_consent_page(html):
         return False
 
     log.warning("Consent page detected. Trying to click 'Accept all'...")
 
-    # Prefer the stable aria-label. Your HTML confirms it.
-    # XPath is the least ambiguous / least dependent on CSS class soup.
     accept_btn = await tab.find(
         xpath='//button[@aria-label="Accept all"]',
         timeout=6,
@@ -72,7 +87,6 @@ async def accept_google_consent_if_present(tab) -> bool:
     )
 
     if not accept_btn:
-        # Backup: jsname you posted
         accept_btn = await tab.find(
             xpath='//button[@jsname="b3VHJd"]',
             timeout=4,
@@ -85,7 +99,7 @@ async def accept_google_consent_if_present(tab) -> bool:
         return False
 
     await accept_btn.click()
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(1.2)
     log.info("Clicked 'Accept all'.")
     return True
 
@@ -123,7 +137,6 @@ def extract_years_in_business(text: str):
 
 
 def extract_website_from_container(container) -> str:
-    # Your old selector kept (usually absent, but harmless)
     link_element = container.select_one(".yYlJEf.Q7PwXb.L48Cpd.brKmxb")
     if link_element and link_element.get("href"):
         return link_element.get("href").strip()
@@ -134,17 +147,14 @@ def extract_website_from_container(container) -> str:
 def extract_website_from_maps_html(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
 
-    # Primary selector you asked for
     el = soup.select_one(".rogA2c.ITvuef")
     if el and el.get("href"):
         return el.get("href").strip()
 
-    # fallback: aria label Website
     a = soup.select_one('a[aria-label*="Website"], a[aria-label*="website"]')
     if a and a.get("href"):
         return a.get("href").strip()
 
-    # fallback: first external link (avoid google)
     for a in soup.select("a[href]"):
         href = (a.get("href") or "").strip()
         if href.startswith("http") and "google." not in href and "g.co" not in href:
@@ -155,25 +165,20 @@ def extract_website_from_maps_html(html: str) -> str:
 
 async def get_website_from_maps_cid(tab, cid: str, consent_state: dict, dump_limit_state: dict) -> str:
     url = f"https://www.google.com/maps?cid={cid}&hl=en-GB&gl=GB"
-
     html = await fetch_html_browser(tab, url, wait_seconds=1.2)
 
-    # If consent shows up, accept ONCE (should set cookies), then retry this URL
     if looks_like_consent_page(html):
         if not consent_state["accepted"]:
             ok = await accept_google_consent_if_present(tab)
             consent_state["accepted"] = ok
-            # re-open after accepting
             html = await fetch_html_browser(tab, url, wait_seconds=1.2)
         else:
-            # already tried accepting; don't loop forever
             log.warning("Consent still present even after acceptance attempt.")
             if dump_limit_state["count"] < dump_limit_state["max"]:
                 dump_limit_state["count"] += 1
                 dump_debug_html(f"debug_maps_consent_{cid}_{dump_limit_state['count']}.html", html)
             return "No Website Listed"
 
-    # Give Maps a short hydration beat then re-read once
     await asyncio.sleep(0.8)
     html2 = await tab.page_source
     if len(html2) > len(html):
@@ -187,7 +192,7 @@ async def get_website_from_maps_cid(tab, cid: str, consent_state: dict, dump_lim
     return website
 
 
-# ---------------- EMAIL SCRAPE ----------------
+# ---------------- EMAIL SCRAPE (IMPROVED) ----------------
 async def fetch_html_fast(session: aiohttp.ClientSession, url: str) -> str:
     try:
         timeout = aiohttp.ClientTimeout(total=10)
@@ -199,6 +204,113 @@ async def fetch_html_fast(session: aiohttp.ClientSession, url: str) -> str:
         return ""
 
 
+def _normalize_email(e: str) -> str:
+    return (e or "").strip().strip(").,;:\"'<>[]{}").lower()
+
+
+def _domain_from_url(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+    except Exception:
+        return ""
+
+
+def _is_plausible_email(email: str) -> bool:
+    email = _normalize_email(email)
+    if not email or "@" not in email:
+        return False
+
+    local, domain = email.split("@", 1)
+    if not local or not domain:
+        return False
+
+    if domain in PLACEHOLDER_DOMAINS:
+        return False
+    if local in PLACEHOLDER_LOCALPARTS:
+        return False
+    if "." not in domain:
+        return False
+
+    if local.startswith(BAD_INBOX_PREFIXES):
+        return False
+
+    # kill sentry/wix/telemetry junk
+    if any(bad in domain for bad in BAD_DOMAINS_SUBSTRINGS):
+        return False
+
+    # kill image-file "emails" like gc-hero-mob@2x.png / Logo_350x@2x.png
+    if domain.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
+        return False
+
+    # also kill ones where the "domain" is obviously a file suffix like "2x.png"
+    if domain.count(".") == 1 and domain.split(".")[-1] in {"png", "jpg", "jpeg", "gif", "webp", "svg"}:
+        return False
+
+    return True
+
+
+def _strip_scripts_styles(soup: BeautifulSoup) -> None:
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+
+
+def _extract_emails_from_html(html: str) -> set[str]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    found = set()
+
+    # Best signal: mailto links
+    for a in soup.select('a[href^="mailto:"]'):
+        href = a.get("href", "")
+        mail = href.split("mailto:", 1)[-1].split("?", 1)[0]
+        mail = _normalize_email(mail)
+        if mail:
+            found.add(mail)
+
+    # Visible text (after stripping scripts/styles)
+    _strip_scripts_styles(soup)
+    visible_text = soup.get_text(" ", strip=True)
+    for m in EMAIL_RE.findall(visible_text):
+        found.add(_normalize_email(m))
+
+    # Fallback: raw html
+    for m in EMAIL_RE.findall(html or ""):
+        found.add(_normalize_email(m))
+
+    return found
+
+
+def _score_email(email: str, website_domain: str) -> int:
+    email = _normalize_email(email)
+    local, domain = email.split("@", 1)
+    score = 0
+
+    # same-domain is a huge signal
+    if website_domain and domain.endswith(website_domain):
+        score += 50
+
+    # common business inboxes
+    if local in GOOD_INBOX_LOCALPARTS:
+        score += 20
+    else:
+        for p in GOOD_INBOX_LOCALPARTS:
+            if local.startswith(p + ".") or local.startswith(p + "-"):
+                score += 10
+                break
+
+    # penalize generic telemetry-like patterns
+    if any(bad in domain for bad in BAD_DOMAINS_SUBSTRINGS):
+        score -= 100
+
+    # mild penalty for free providers (still legit sometimes)
+    if domain in {"gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com"}:
+        score -= 5
+
+    return score
+
+
 async def get_email_from_website(session: aiohttp.ClientSession, website: str) -> str:
     if not website or website == "No Website Listed":
         return "No email found"
@@ -206,18 +318,29 @@ async def get_email_from_website(session: aiohttp.ClientSession, website: str) -
     if not website.startswith("http"):
         website = "https://" + website
 
-    homepage = await fetch_html_fast(session, website)
-    emails = set(EMAIL_RE.findall(homepage))
-    if emails:
-        return sorted(emails)[0]
+    website_domain = _domain_from_url(website)
 
-    contact_url = urljoin(website, "/contact")
-    contact_page = await fetch_html_fast(session, contact_url)
-    emails = set(EMAIL_RE.findall(contact_page))
-    if emails:
-        return sorted(emails)[0]
+    paths = ["", "/contact", "/contact-us", "/about", "/about-us"]
+    candidates: set[str] = set()
 
-    return "No email found"
+    for p in paths:
+        url = website if p == "" else urljoin(website, p)
+        html = await fetch_html_fast(session, url)
+        if not html:
+            continue
+
+        candidates |= _extract_emails_from_html(html)
+
+        # Early stop if we already have a same-domain plausible email
+        if any(_is_plausible_email(e) and website_domain and e.split("@", 1)[1].endswith(website_domain) for e in candidates):
+            break
+
+    valid = [e for e in candidates if _is_plausible_email(e)]
+    if not valid:
+        return "No email found"
+
+    valid.sort(key=lambda e: _score_email(e, website_domain), reverse=True)
+    return valid[0]
 
 
 # ---------------- DB ----------------
@@ -287,10 +410,7 @@ async def main():
     step = 20
     max_pages = 50
 
-    # consent accepted once per run
     consent_state = {"accepted": False}
-
-    # limit debug dumps
     dump_limit_state = {"count": 0, "max": 8}
 
     async with Chrome() as browser:
