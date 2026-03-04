@@ -110,7 +110,29 @@ def extract_external_post_id(section):
     m = re.search(r'post-(\d+)', href)
     return m.group(1) if m else None
 
+def fetched_recently(url: str, days: int) -> bool:
+    if days <= 0:
+        return False
 
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 1
+                FROM page_fetch
+                WHERE url = %s
+                  AND fetched_at >= now() - make_interval(days => %s)
+                LIMIT 1;
+            """, (url, days))
+            return cur.fetchone() is not None
+
+def get_skip_days(default: int = 7) -> int:
+    raw = os.getenv("CRAWL_SKIP_DAYS", str(default)).strip()
+    try:
+        days = int(raw)
+        return max(days, 0)
+    except ValueError:
+        return default
+    
 def extract_username(section):
     user = section.select_one(".username.username--wide")
     if user:
@@ -161,25 +183,20 @@ def print_post_data(post):
     print("post_id:", post.get("external_item_id"))
     print("text:", (post.get("post_content") or "")[:120], "...")
 
-
 async def start_browser():
     browser = Chrome()
     tab = await browser.start()
     return browser, tab
 
-
 async def go_to_page(tab, url):
     await tab.go_to(url)
     await asyncio.sleep(3)
 
-
 async def get_page_html(tab):
     return await tab.page_source
 
-
 async def stop_browser(browser):
     await browser.stop()
-
 
 def process_posts(html):
     sections = parse_html_for_class(html, "message-inner")
@@ -191,7 +208,6 @@ def process_posts(html):
         posts.append(post)
     return posts
 
-
 def get_next_page(html):
     buttons = parse_html_for_class(html, "pageNav-jump--next")
 
@@ -201,12 +217,10 @@ def get_next_page(html):
 
     return None
     
-
 def print_posts(posts):
     for post in posts:
         print_post_data(post)
         print("-" * 40)
-
 
 def save_posts(posts):
 
@@ -306,6 +320,12 @@ def save_posts(posts):
     print(f"Saved {len(posts)} posts to DB")
 
 async def main():
+    # Skip check BEFORE starting browser (prevents leaked Chrome processes)
+    skip_days = get_skip_days()
+    if fetched_recently(URL, skip_days):
+        print(f"Thread fetched in last {skip_days} day(s), skipping: {URL}")
+        return
+
     browser, tab = await start_browser()
     current_page = URL
 
@@ -314,9 +334,11 @@ async def main():
             await go_to_page(tab, current_page)
             html = await get_page_html(tab)
 
+            # Log fetch + commit so it persists
             with get_db_connection() as conn:
                 with conn.cursor() as cur:
-                    log_fetch(cur, current_page)
+                    log_fetch(cur, current_page, status="ok", error=None)
+                conn.commit()
 
             posts = process_posts(html)
             save_posts(posts)
@@ -326,6 +348,15 @@ async def main():
             if not next_page:
                 break
             current_page = next_page
+
+    except Exception as e:
+        # Optional: log errors too (useful once you scale)
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                log_fetch(cur, current_page, status="error", error=str(e))
+            conn.commit()
+        raise
+
     finally:
         await stop_browser(browser)
 
