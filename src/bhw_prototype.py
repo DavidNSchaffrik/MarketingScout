@@ -40,6 +40,26 @@ def get_db_connection():
         password=os.getenv("PG_PASSWORD")
     )
 
+def fetched_recently_conn(conn, url: str, days: int) -> bool:
+    if days <= 0:
+        return False
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT 1
+            FROM page_fetch
+            WHERE url = %s
+              AND fetched_at >= now() - make_interval(days => %s)
+            LIMIT 1;
+        """, (url, days))
+        return cur.fetchone() is not None
+
+def log_fetch_conn(conn, url, status="ok", error=None):
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO page_fetch (url, status, error)
+            VALUES (%s, %s, %s)
+        """, (url, status, error))
+
 def hash_text(text):
     return hashlib.sha256(text.encode("utf-8")).digest()
 
@@ -109,9 +129,9 @@ def extract_like_count(section) -> int:
     # Otherwise it's a single username: "Topiano"
     return 1
 
-async def crawl_thread(tab, thread_url: str):
+async def crawl_thread(tab, conn, thread_url: str):
     skip_days = get_skip_days()
-    if fetched_recently(thread_url, skip_days):
+    if fetched_recently_conn(conn, thread_url, skip_days):
         print(f"Thread fetched in last {skip_days} day(s), skipping: {thread_url}")
         return
 
@@ -121,26 +141,21 @@ async def crawl_thread(tab, thread_url: str):
         await go_to_page(tab, current_page)
         html = await get_page_html(tab)
 
-        # Log fetch + commit so it persists
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                log_fetch(cur, current_page, status="ok", error=None)
-            conn.commit()
+        # Log fetch using the SAME conn
+        log_fetch_conn(conn, current_page, status="ok", error=None)
 
         posts = process_posts(html)
-        save_posts(posts, thread_url)
+        save_posts(conn, posts, thread_url)
+
+        # commit once per page (safe + simple)
+        conn.commit()
+
         print(f"Fetched {current_page} -> {len(posts)} posts")
 
         next_page = get_next_page(html)
         if not next_page:
             break
         current_page = next_page
-
-def log_fetch(cur, url, status="ok", error=None):
-    cur.execute("""
-        INSERT INTO page_fetch (url, status, error)
-        VALUES (%s, %s, %s)
-    """, (url, status, error))
 
 def extract_external_post_id(section):
     # Try to find a permalink containing "post-123456"
@@ -151,21 +166,6 @@ def extract_external_post_id(section):
     href = a.get("href", "")
     m = re.search(r'post-(\d+)', href)
     return m.group(1) if m else None
-
-def fetched_recently(url: str, days: int) -> bool:
-    if days <= 0:
-        return False
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT 1
-                FROM page_fetch
-                WHERE url = %s
-                  AND fetched_at >= now() - make_interval(days => %s)
-                LIMIT 1;
-            """, (url, days))
-            return cur.fetchone() is not None
 
 def get_skip_days(default: int = 7) -> int:
     raw = os.getenv("CRAWL_SKIP_DAYS", str(default)).strip()
@@ -264,134 +264,135 @@ def print_posts(posts):
         print_post_data(post)
         print("-" * 40)
 
-def save_posts(posts, thread_url: str):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
+def save_posts(conn, posts, thread_url: str):
+    with conn.cursor() as cur:
 
-            # ensure source exists
+        # ensure source exists
+        cur.execute("""
+            INSERT INTO source (source_type, name, base_url)
+            VALUES (%s,%s,%s)
+            ON CONFLICT (source_type,name)
+            DO UPDATE SET base_url=EXCLUDED.base_url
+            RETURNING source_id
+        """, ("forum", "BlackHatWorld", "https://www.blackhatworld.com"))
+        source_id = cur.fetchone()[0]
+
+        # dynamic thread id from the passed-in URL
+        thread_id = extract_thread_id(thread_url)
+        if not thread_id:
+            raise ValueError(f"Could not extract thread id from URL: {thread_url}")
+
+        # ensure container exists (thread)
+        cur.execute("""
+            INSERT INTO container (source_id,container_type,external_container_id,canonical_url)
+            VALUES (%s,%s,%s,%s)
+            ON CONFLICT (source_id,external_container_id)
+            DO UPDATE SET canonical_url=EXCLUDED.canonical_url
+            RETURNING container_id
+        """, (source_id, "thread", thread_id, thread_url))
+        container_id = cur.fetchone()[0]
+
+        for post in posts:
+            if not post.get("external_item_id"):
+                continue
+
+            username = (post.get("username") or "unknown").strip()
+            published_at = parse_bhw_date(post.get("time_posted"))
+            like_count = int(post.get("like_count", 0) or 0)
+            content_text = (post.get("post_content") or "").strip()
+            canonical_url = post.get("canonical_url")
+
+            # actor
             cur.execute("""
-                INSERT INTO source (source_type, name, base_url)
-                VALUES (%s,%s,%s)
-                ON CONFLICT (source_type,name)
-                DO UPDATE SET base_url=EXCLUDED.base_url
-                RETURNING source_id
-            """, ("forum", "BlackHatWorld", "https://www.blackhatworld.com"))
-            source_id = cur.fetchone()[0]
+                INSERT INTO actor (source_id,handle)
+                VALUES (%s,%s)
+                ON CONFLICT (source_id,handle)
+                DO UPDATE SET handle=EXCLUDED.handle
+                RETURNING actor_id
+            """, (source_id, username))
+            actor_id = cur.fetchone()[0]
 
-            # dynamic thread id from the passed-in URL
-            thread_id = extract_thread_id(thread_url)
-            if not thread_id:
-                raise ValueError(f"Could not extract thread id from URL: {thread_url}")
-
-            # ensure container exists (thread)
+            # item (post)
             cur.execute("""
-                INSERT INTO container (source_id,container_type,external_container_id,canonical_url)
-                VALUES (%s,%s,%s,%s)
-                ON CONFLICT (source_id,external_container_id)
-                DO UPDATE SET canonical_url=EXCLUDED.canonical_url
-                RETURNING container_id
-            """, (source_id, "thread", thread_id, thread_url))
-            container_id = cur.fetchone()[0]
-
-            for post in posts:
-                # safety
-                if not post.get("external_item_id"):
-                    continue
-
-                username = (post.get("username") or "unknown").strip()
-                published_at = parse_bhw_date(post.get("time_posted"))
-                like_count = int(post.get("like_count", 0) or 0)
-                content_text = (post.get("post_content") or "").strip()
-                canonical_url = post.get("canonical_url")
-
-                # actor
-                cur.execute("""
-                    INSERT INTO actor (source_id,handle)
-                    VALUES (%s,%s)
-                    ON CONFLICT (source_id,handle)
-                    DO UPDATE SET handle=EXCLUDED.handle
-                    RETURNING actor_id
-                """, (source_id, username))
-                actor_id = cur.fetchone()[0]
-
-                # item (post)
-                cur.execute("""
-                    INSERT INTO item (
-                        source_id,
-                        container_id,
-                        item_type,
-                        external_item_id,
-                        canonical_url,
-                        actor_id,
-                        score,
-                        published_at
-                    )
-                    VALUES (%s,%s,'forum_post',%s,%s,%s,%s,%s)
-                    ON CONFLICT (source_id,external_item_id)
-                    DO UPDATE SET
-                        canonical_url = EXCLUDED.canonical_url,
-                        score = EXCLUDED.score,
-                        published_at = EXCLUDED.published_at,
-                        scraped_last_at = now()
-                    RETURNING item_id
-                """, (
+                INSERT INTO item (
                     source_id,
                     container_id,
-                    str(post["external_item_id"]),
+                    item_type,
+                    external_item_id,
                     canonical_url,
                     actor_id,
-                    like_count,
+                    score,
                     published_at
-                ))
-                item_id = cur.fetchone()[0]
+                )
+                VALUES (%s,%s,'forum_post',%s,%s,%s,%s,%s)
+                ON CONFLICT (source_id,external_item_id)
+                DO UPDATE SET
+                    canonical_url = EXCLUDED.canonical_url,
+                    score = EXCLUDED.score,
+                    published_at = EXCLUDED.published_at,
+                    scraped_last_at = now()
+                RETURNING item_id
+            """, (
+                source_id,
+                container_id,
+                str(post["external_item_id"]),
+                canonical_url,
+                actor_id,
+                like_count,
+                published_at
+            ))
+            item_id = cur.fetchone()[0]
 
-                # content version
-                if content_text:
-                    text_hash = hash_text(content_text)
+            # content version
+            if content_text:
+                text_hash = hash_text(content_text)
 
+                cur.execute("""
+                    INSERT INTO item_content (item_id,content_text,content_hash,is_current)
+                    VALUES (%s,%s,%s,true)
+                    ON CONFLICT (item_id,content_hash) DO NOTHING
+                    RETURNING item_content_id;
+                """, (item_id, content_text, text_hash))
+
+                new_row = cur.fetchone()
+                if new_row:
+                    new_content_id = new_row[0]
                     cur.execute("""
-                        INSERT INTO item_content (item_id,content_text,content_hash,is_current)
-                        VALUES (%s,%s,%s,true)
-                        ON CONFLICT (item_id,content_hash) DO NOTHING
-                        RETURNING item_content_id;
-                    """, (item_id, content_text, text_hash))
+                        UPDATE item_content
+                        SET is_current = false
+                        WHERE item_id = %s AND item_content_id <> %s;
+                    """, (item_id, new_content_id))
 
-                    new_row = cur.fetchone()
-                    if new_row:
-                        new_content_id = new_row[0]
-                        cur.execute("""
-                            UPDATE item_content
-                            SET is_current = false
-                            WHERE item_id = %s AND item_content_id <> %s;
-                        """, (item_id, new_content_id))
-
-        conn.commit()
-
+    conn.commit()
     print(f"Saved {len(posts)} posts to DB")
-
 
 async def main():
     thread_urls = load_thread_urls()
     if not thread_urls:
         raise ValueError("No thread URLs found. Check THREADS_FILE / threads.txt")
 
-    browser, tab = await start_browser()
+    # ONE DB connection for the whole run
+    conn = get_db_connection()
 
+    browser, tab = await start_browser()
     try:
         for i, thread_url in enumerate(thread_urls, start=1):
             print(f"\n[{i}/{len(thread_urls)}] Crawling: {thread_url}")
             try:
-                await crawl_thread(tab, thread_url)
+                await crawl_thread(tab, conn, thread_url)
             except Exception as e:
-                # log error at thread level too
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        log_fetch(cur, thread_url, status="error", error=str(e))
-                    conn.commit()
+                # log thread-level error using SAME conn
+                log_fetch_conn(conn, thread_url, status="error", error=str(e))
+                conn.commit()
                 print("Error crawling thread:", thread_url, "|", e)
 
     finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
         await stop_browser(browser)
 
 asyncio.run(main())
+
 
