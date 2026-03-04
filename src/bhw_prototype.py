@@ -11,11 +11,46 @@ def parse_html_for_class(html, selector):
     return soup.select(f".{selector}")
 
 
-def extract_like_count(section):
-    like_message = section.select_one(".reactionsBar-link")
-    if like_message:
-        return like_message.get_text(strip=True)
-    return "No Likes"
+def extract_like_count(section) -> int:
+    el = section.select_one(".reactionsBar-link")
+    if not el:
+        return 0
+
+    text = el.get_text(" ", strip=True)
+    if not text:
+        return 0
+
+    t = text.lower()
+
+    # "No Likes"
+    if "no likes" in t:
+        return 0
+
+    # Common formats:
+    # 1) "Topiano"  -> 1
+    # 2) "A, B, C" -> 3
+    # 3) "A, B, C and 4 others" -> 3 + 4 = 7
+    # 4) "A and 1 other" -> 2
+
+    # If there's an "and N other(s)" piece, count that plus the names before it.
+    m = re.search(r"\band\s+(\d+)\s+other[s]?\b", t)
+    if m:
+        others = int(m.group(1))
+
+        # everything before " and N other(s)"
+        before = re.split(r"\band\s+\d+\s+other[s]?\b", text, maxsplit=1)[0].strip()
+
+        # count comma-separated names in the "before" part
+        names = [p.strip() for p in before.split(",") if p.strip()]
+        return len(names) + others
+
+    # Otherwise, if there are commas, it's a list of names: "A, B, C"
+    if "," in text:
+        names = [p.strip() for p in text.split(",") if p.strip()]
+        return len(names)
+
+    # Otherwise it's a single username: "Topiano"
+    return 1
 
 
 def extract_external_post_id(section):
