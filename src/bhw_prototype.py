@@ -7,6 +7,7 @@ import hashlib
 from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 
@@ -190,7 +191,7 @@ async def start_browser():
 
 async def go_to_page(tab, url):
     await tab.go_to(url)
-    await asyncio.sleep(3)
+    await asyncio.sleep(random.uniform(2.0, 5.0))
 
 async def get_page_html(tab):
     return await tab.page_source
