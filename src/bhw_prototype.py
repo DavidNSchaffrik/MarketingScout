@@ -12,7 +12,7 @@ import random
 load_dotenv()
 
 
-URL = "https://www.blackhatworld.com/seo/guide-future-proof-backlink-strategies-build-once-benefit-forever-2025-edition.1478334/"
+URL = os.getenv("THREAD_URL")
 
 
 
