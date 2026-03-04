@@ -4,7 +4,7 @@ from pydoll.browser.chromium import Chrome
 import re
 import psycopg
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
 
@@ -32,6 +32,26 @@ def parse_html_for_class(html, selector):
     soup = BeautifulSoup(html, "html.parser")
     return soup.select(f".{selector}")
 
+def extract_thread_id(url):
+    m = re.search(r"\.(\d+)/?$", url)
+    return m.group(1) if m else None
+
+def extract_post_permalink(section):
+    a = section.select_one('a[href*="post-"]')
+    if not a:
+        return None
+
+    href = a.get("href", "").strip()
+    if not href:
+        return None
+
+    # make absolute
+    if href.startswith("/"):
+        return "https://www.blackhatworld.com" + href
+    if href.startswith("http"):
+        return href
+
+    return None
 
 def extract_like_count(section) -> int:
     el = section.select_one(".reactionsBar-link")
@@ -74,6 +94,11 @@ def extract_like_count(section) -> int:
     # Otherwise it's a single username: "Topiano"
     return 1
 
+def log_fetch(cur, url, status="ok", error=None):
+    cur.execute("""
+        INSERT INTO page_fetch (url, status, error)
+        VALUES (%s, %s, %s)
+    """, (url, status, error))
 
 def extract_external_post_id(section):
     # Try to find a permalink containing "post-123456"
@@ -92,13 +117,21 @@ def extract_username(section):
         return user.get_text(strip=True)
     return None
 
-
 def extract_time_posted(section):
     time_posted = section.select_one(".message-attribution-main.listInline")
     if time_posted:
         return time_posted.get_text(strip=True)
     return None
 
+def parse_bhw_date(date_str):
+    if not date_str:
+        return None
+
+    try:
+        dt = datetime.strptime(date_str, "%b %d, %Y")
+        return dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 def extract_raw_post_text(section):
     post_contents = section.select_one(".message-body.js-selectToQuote")
@@ -111,31 +144,22 @@ def extract_raw_post_text(section):
 
     return None
 
-
 def extract_post_data(section):
     return {
         "external_item_id": extract_external_post_id(section),
+        "canonical_url": extract_post_permalink(section),
         "username": extract_username(section),
         "time_posted": extract_time_posted(section),
         "post_content": extract_raw_post_text(section),
-        "like_count" : extract_like_count(section)
+        "like_count": extract_like_count(section)
     }
 
-
 def print_post_data(post):
-    if post["username"]:
-        print(post["username"])
-
-    if post["time_posted"]:
-        print(post["time_posted"])
-
-    if post["post_content"]:
-        print(post["post_content"])
-
-    if post["like_count"]:
-        print(post["like_count"])
-
+    print("user:", post.get("username"))
+    print("time:", post.get("time_posted"))
     print("likes:", post.get("like_count", 0))
+    print("post_id:", post.get("external_item_id"))
+    print("text:", (post.get("post_content") or "")[:120], "...")
 
 
 async def start_browser():
@@ -200,6 +224,13 @@ def save_posts(posts):
 
             source_id = cur.fetchone()[0]
 
+            thread_id = extract_thread_id(URL)
+            if not thread_id:
+                raise ValueError(f"Could not extract thread id from URL: {URL}")
+
+
+
+
             # ensure container exists (thread)
             cur.execute("""
                 INSERT INTO container (source_id,container_type,external_container_id,canonical_url)
@@ -207,13 +238,14 @@ def save_posts(posts):
                 ON CONFLICT (source_id,external_container_id)
                 DO UPDATE SET canonical_url=EXCLUDED.canonical_url
                 RETURNING container_id
-            """, (source_id,"thread","1478334",URL))
+            """, (source_id, "thread", thread_id, URL))
 
             container_id = cur.fetchone()[0]
 
             for post in posts:
 
                 username = post["username"] or "unknown"
+                published_at = parse_bhw_date(post.get("time_posted"))
 
                 # actor
                 cur.execute("""
@@ -233,21 +265,27 @@ def save_posts(posts):
                         container_id,
                         item_type,
                         external_item_id,
+                        canonical_url,
                         actor_id,
-                        score
+                        score,
+                        published_at
                     )
-                    VALUES (%s,%s,'forum_post',%s,%s,%s)
+                    VALUES (%s,%s,'forum_post',%s,%s,%s,%s,%s)
                     ON CONFLICT (source_id,external_item_id)
                     DO UPDATE SET
-                        score=EXCLUDED.score,
-                        scraped_last_at=now()
+                        canonical_url = EXCLUDED.canonical_url,
+                        score = EXCLUDED.score,
+                        published_at = EXCLUDED.published_at,
+                        scraped_last_at = now()
                     RETURNING item_id
-                """,(
+                """, (
                     source_id,
                     container_id,
                     post["external_item_id"],
+                    post.get("canonical_url"),
                     actor_id,
-                    post["like_count"]
+                    post["like_count"],
+                    published_at
                 ))
 
                 item_id = cur.fetchone()[0]
@@ -275,6 +313,10 @@ async def main():
         while True:
             await go_to_page(tab, current_page)
             html = await get_page_html(tab)
+
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    log_fetch(cur, current_page)
 
             posts = process_posts(html)
             save_posts(posts)
