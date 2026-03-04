@@ -2,9 +2,31 @@ import asyncio
 from bs4 import BeautifulSoup
 from pydoll.browser.chromium import Chrome
 import re
+import psycopg
+import hashlib
+from datetime import datetime
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 URL = "https://www.blackhatworld.com/seo/guide-future-proof-backlink-strategies-build-once-benefit-forever-2025-edition.1478334/"
 
+
+
+
+def get_db_connection():
+    return psycopg.connect(
+        host=os.getenv("PG_HOST"),
+        port=os.getenv("PG_PORT"),
+        dbname=os.getenv("PG_DATABASE"),
+        user=os.getenv("PG_USER"),
+        password=os.getenv("PG_PASSWORD")
+    )
+
+def hash_text(text):
+    return hashlib.sha256(text.encode("utf-8")).digest()
 
 def parse_html_for_class(html, selector):
     soup = BeautifulSoup(html, "html.parser")
@@ -113,8 +135,7 @@ def print_post_data(post):
     if post["like_count"]:
         print(post["like_count"])
 
-    if post["external_item_id"]:
-        print(post["external_item_id"])
+    print("likes:", post.get("like_count", 0))
 
 
 async def start_browser():
@@ -164,9 +185,87 @@ def print_posts(posts):
 
 
 def save_posts(posts):
-    # later: insert into DB here
-    print(f"Saving {len(posts)} posts (stub)")
 
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+
+            # ensure source exists
+            cur.execute("""
+                INSERT INTO source (source_type, name, base_url)
+                VALUES (%s,%s,%s)
+                ON CONFLICT (source_type,name)
+                DO UPDATE SET base_url=EXCLUDED.base_url
+                RETURNING source_id
+            """, ("forum","BlackHatWorld","https://www.blackhatworld.com"))
+
+            source_id = cur.fetchone()[0]
+
+            # ensure container exists (thread)
+            cur.execute("""
+                INSERT INTO container (source_id,container_type,external_container_id,canonical_url)
+                VALUES (%s,%s,%s,%s)
+                ON CONFLICT (source_id,external_container_id)
+                DO UPDATE SET canonical_url=EXCLUDED.canonical_url
+                RETURNING container_id
+            """, (source_id,"thread","1478334",URL))
+
+            container_id = cur.fetchone()[0]
+
+            for post in posts:
+
+                username = post["username"] or "unknown"
+
+                # actor
+                cur.execute("""
+                    INSERT INTO actor (source_id,handle)
+                    VALUES (%s,%s)
+                    ON CONFLICT (source_id,handle)
+                    DO UPDATE SET handle=EXCLUDED.handle
+                    RETURNING actor_id
+                """,(source_id,username))
+
+                actor_id = cur.fetchone()[0]
+
+                # post item
+                cur.execute("""
+                    INSERT INTO item (
+                        source_id,
+                        container_id,
+                        item_type,
+                        external_item_id,
+                        actor_id,
+                        score
+                    )
+                    VALUES (%s,%s,'forum_post',%s,%s,%s)
+                    ON CONFLICT (source_id,external_item_id)
+                    DO UPDATE SET
+                        score=EXCLUDED.score,
+                        scraped_last_at=now()
+                    RETURNING item_id
+                """,(
+                    source_id,
+                    container_id,
+                    post["external_item_id"],
+                    actor_id,
+                    post["like_count"]
+                ))
+
+                item_id = cur.fetchone()[0]
+
+                # content version
+                text = post["post_content"] or ""
+                text_hash = hash_text(text)
+
+                cur.execute("""
+                    INSERT INTO item_content (item_id,content_text,content_hash)
+                    VALUES (%s,%s,%s)
+                    ON CONFLICT (item_id,content_hash)
+                    DO NOTHING
+                """,(item_id,text,text_hash))
+
+        conn.commit()
+
+    print(f"Saved {len(posts)} posts to DB")
 
 async def main():
     browser, tab = await start_browser()
