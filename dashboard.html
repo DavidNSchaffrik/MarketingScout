@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BHW Scraper Dashboard</title>
+
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1d212b;
+      --border: #2a3040;
+      --text: #e8ecf3;
+      --muted: #97a0b3;
+      --muted-2: #6e7788;
+
+      --green: #2dd881;
+      --green-soft: #103222;
+
+      --blue: #5b9cff;
+      --blue-soft: #12253f;
+
+      --amber: #ffb020;
+      --amber-soft: #3b2a08;
+
+      --red: #ff5d73;
+      --red-soft: #3d141b;
+
+      --radius: 12px;
+      --shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px;
+      line-height: 1.45;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .section {
+      margin-bottom: 24px;
+    }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .empty-state {
+      color: var(--muted-2);
+      font-size: 14px;
+      padding: 16px;
+    }
+
+    .ellipsis {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header h1 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: 0.03em;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s infinite;
+    }
+
+    .status-dot.error {
+      background: var(--red);
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
+    /* Config */
+    .config-panel {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      padding: 16px;
+    }
+
+    .config-panel input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+
+    .config-panel input::placeholder {
+      color: var(--muted-2);
+    }
+
+    .config-panel input:focus {
+      border-color: var(--green);
+    }
+
+    .connect-btn {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 16px;
+      background: var(--green);
+      color: #08120d;
+      font-weight: 700;
+      cursor: pointer;
+      transition: 0.15s ease;
+    }
+
+    .connect-btn:hover {
+      filter: brightness(0.95);
+    }
+
+    /* Error */
+    .error-message {
+      display: none;
+      margin-top: 16px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      background: var(--red-soft);
+      border: 1px solid rgba(255, 93, 115, 0.25);
+      color: #ff9baa;
+      font-size: 14px;
+    }
+
+    /* Stats */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+    }
+
+    .stat-card {
+      padding: 16px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .stat-value {
+      font-size: 30px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .stat-value.green { color: var(--green); }
+    .stat-value.blue  { color: var(--blue); }
+    .stat-value.amber { color: var(--amber); }
+    .stat-value.red   { color: var(--red); }
+
+    /* Workers */
+    .workers-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 12px;
+    }
+
+    .worker-card {
+      padding: 14px;
+      border-left: 4px solid transparent;
+    }
+
+    .worker-card.discovery {
+      border-left-color: var(--blue);
+    }
+
+    .worker-card.worker {
+      border-left-color: var(--green);
+    }
+
+    .worker-card.stopped {
+      border-left-color: var(--muted-2);
+      opacity: 0.65;
+    }
+
+    .worker-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .worker-name {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .badge {
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .badge-running {
+      background: var(--green-soft);
+      color: var(--green);
+    }
+
+    .badge-discovery {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .badge-stopped {
+      background: #2a2f3a;
+      color: var(--muted);
+    }
+
+    .worker-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .worker-stat {
+      text-align: center;
+      padding: 10px 8px;
+      border-radius: 10px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+    }
+
+    .worker-stat-number {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .worker-stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .worker-url {
+      font-size: 12px;
+      color: var(--muted);
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+
+    .stop-btn {
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 93, 115, 0.3);
+      background: transparent;
+      color: var(--red);
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.15s ease;
+    }
+
+    .stop-btn:hover:not(:disabled) {
+      background: var(--red-soft);
+    }
+
+    .stop-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    /* Tables */
+    .table-wrap {
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+    }
+
+    td {
+      color: var(--text);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .pill-pending {
+      background: var(--amber-soft);
+      color: var(--amber);
+    }
+
+    .pill-done {
+      background: var(--green-soft);
+      color: var(--green);
+    }
+
+    .pill-claimed {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .pill-retry {
+      background: var(--red-soft);
+      color: var(--red);
+    }
+
+    .refresh-info {
+      text-align: center;
+      color: var(--muted-2);
+      font-size: 13px;
+      margin-top: 16px;
+    }
+
+    @media (max-width: 700px) {
+      body {
+        padding: 16px;
+      }
+
+      .header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .worker-stats {
+        grid-template-columns: 1fr;
+      }
+
+      table {
+        font-size: 13px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <header class="header">
+      <h1 class="mono">BHW Scraper Dashboard</h1>
+
+      <div class="status">
+        <div class="status-dot" id="status-dot"></div>
+        <span id="status-text">Not connected</span>
+      </div>
+    </header>
+
+    <section class="section">
+      <div class="card config-panel">
+        <input id="cfg-host" placeholder="PG_HOST" value="localhost" />
+        <input id="cfg-port" placeholder="PG_PORT" value="5432" />
+        <input id="cfg-db" placeholder="PG_DATABASE" />
+        <input id="cfg-user" placeholder="PG_USER" />
+        <input id="cfg-pass" placeholder="PG_PASSWORD" type="password" />
+        <button class="connect-btn" onclick="connect()">Connect</button>
+      </div>
+
+      <div class="error-message" id="error-msg"></div>
+    </section>
+
+    <section class="section">
+      <div class="stats-grid">
+        <div class="card stat-card">
+          <div class="stat-label">Total posts</div>
+          <div class="stat-value green" id="s-posts">—</div>
+        </div>
+
+        <div class="card stat-card">
+          <div class="stat-label">Threads crawled</div>
+          <div class="stat-value blue" id="s-threads">—</div>
+        </div>
+
+        <div class="card stat-card">
+          <div class="stat-label">Queue pending</div>
+          <div class="stat-value amber" id="s-pending">—</div>
+        </div>
+
+        <div class="card stat-card">
+          <div class="stat-label">Queue done</div>
+          <div class="stat-value green" id="s-done">—</div>
+        </div>
+
+        <div class="card stat-card">
+          <div class="stat-label">Errors</div>
+          <div class="stat-value red" id="s-errors">—</div>
+        </div>
+
+        <div class="card stat-card">
+          <div class="stat-label">Quotes saved</div>
+          <div class="stat-value green" id="s-quotes">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">Active workers</div>
+      <div class="workers-grid" id="workers-grid">
+        <div class="card empty-state">No workers found. Connect to the database.</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">Queue breakdown</div>
+      <div class="card table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Count</th>
+              <th>Oldest queued</th>
+            </tr>
+          </thead>
+          <tbody id="queue-tbody">
+            <tr>
+              <td colspan="3" class="muted">—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">Recently crawled</div>
+      <div class="card table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>URL</th>
+              <th>Posts</th>
+              <th>Fetched at</th>
+            </tr>
+          </thead>
+          <tbody id="recent-tbody">
+            <tr>
+              <td colspan="3" class="muted">—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="refresh-info" id="refresh-info">Auto-refresh every 10 seconds</div>
+  </div>
+
+  <script>
+    let apiBase = "";
+    let refreshTimer = null;
+    let isConnected = false;
+
+    const $ = (id) => document.getElementById(id);
+
+    function connect() {
+      const config = {
+        host: $("cfg-host").value.trim(),
+        port: $("cfg-port").value.trim(),
+        db: $("cfg-db").value.trim(),
+        user: $("cfg-user").value.trim(),
+        pass: $("cfg-pass").value
+      };
+
+      if (!config.db || !config.user) {
+        showError("Enter both database name and user.");
+        return;
+      }
+
+      const params = new URLSearchParams(config);
+      apiBase = `http://localhost:5055/api?${params.toString()}`;
+
+      isConnected = true;
+      refresh();
+
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = setInterval(refresh, 10000);
+    }
+
+    async function refresh() {
+      if (!isConnected) return;
+
+      try {
+        const response = await fetch(apiBase);
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        hideError();
+        renderDashboard(data);
+        setConnectionStatus(true, `Live · ${new Date().toLocaleTimeString()}`);
+      } catch (error) {
+        setConnectionStatus(false, "Connection error");
+        showError("Cannot reach dashboard server. Make sure monitor.py is running on port 5055.");
+      }
+    }
+
+    function renderDashboard(data) {
+      renderStats(data.stats || {});
+      renderWorkers(data.workers || []);
+      renderQueue(data.queue_breakdown || []);
+      renderRecent(data.recent || []);
+    }
+
+    function renderStats(stats) {
+      $("s-posts").textContent = formatNumber(stats.total_posts);
+      $("s-threads").textContent = formatNumber(stats.total_threads);
+      $("s-pending").textContent = formatNumber(stats.queue_pending);
+      $("s-done").textContent = formatNumber(stats.queue_done);
+      $("s-errors").textContent = formatNumber(stats.total_errors);
+      $("s-quotes").textContent = formatNumber(stats.total_quotes);
+    }
+
+    function renderWorkers(workers) {
+      const grid = $("workers-grid");
+
+      if (!workers.length) {
+        grid.innerHTML = `<div class="card empty-state">No active workers.</div>`;
+        return;
+      }
+
+      grid.innerHTML = workers.map(renderWorkerCard).join("");
+    }
+
+    function renderWorkerCard(worker) {
+      const type = worker.worker_type || "worker";
+      const stopped = worker.status === "stopped";
+
+      const badgeClass = stopped
+        ? "badge-stopped"
+        : type === "discovery"
+        ? "badge-discovery"
+        : "badge-running";
+
+      const badgeText = stopped
+        ? "Stopped"
+        : type === "discovery"
+        ? "Discovery"
+        : "Running";
+
+      const cardClass = stopped ? "stopped" : type;
+      const buttonLabel = stopped ? "Stopped" : "Stop worker";
+      const disabled = stopped ? "disabled" : "";
+
+      return `
+        <div class="card worker-card ${cardClass}">
+          <div class="worker-header">
+            <span class="worker-name mono">${escapeHtml(type)} #${escapeHtml(worker.worker_id)}</span>
+            <span class="badge ${badgeClass}">${badgeText}</span>
+          </div>
+
+          <div class="worker-stats">
+            <div class="worker-stat">
+              <div class="worker-stat-number">${formatNumber(worker.pages_fetched)}</div>
+              <div class="worker-stat-label">Pages</div>
+            </div>
+
+            <div class="worker-stat">
+              <div class="worker-stat-number">${formatNumber(worker.posts_saved)}</div>
+              <div class="worker-stat-label">Posts</div>
+            </div>
+
+            <div class="worker-stat">
+              <div class="worker-stat-number">${formatNumber(worker.errors)}</div>
+              <div class="worker-stat-label">Errors</div>
+            </div>
+          </div>
+
+          <div class="worker-url ellipsis mono" title="${escapeHtml(worker.last_url || "No URL yet")}">
+            ${escapeHtml(worker.last_url || "No URL yet")}
+          </div>
+
+          <button
+            class="stop-btn"
+            ${disabled}
+            onclick="stopWorker(${Number(worker.worker_id)}, '${escapeJsString(type)}', this)"
+          >
+            ${buttonLabel}
+          </button>
+        </div>
+      `;
+    }
+
+    function renderQueue(rows) {
+      const tbody = $("queue-tbody");
+
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="3" class="muted">No queue data.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = rows.map((row) => `
+        <tr>
+          <td><span class="pill pill-${escapeHtml(row.status)}">${escapeHtml(row.status)}</span></td>
+          <td>${formatNumber(row.count)}</td>
+          <td class="muted">${escapeHtml(row.oldest || "—")}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderRecent(rows) {
+      const tbody = $("recent-tbody");
+
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="3" class="muted">No recent data.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = rows.map((row) => `
+        <tr>
+          <td class="ellipsis mono" title="${escapeHtml(row.url || "")}">
+            ${escapeHtml(row.url || "—")}
+          </td>
+          <td>${formatNumber(row.post_count)}</td>
+          <td class="muted">${escapeHtml(row.fetched_at || "—")}</td>
+        </tr>
+      `).join("");
+    }
+
+    async function stopWorker(workerId, workerType, button) {
+      button.disabled = true;
+      button.textContent = "Sending...";
+
+      try {
+        const response = await fetch(
+          `${apiBase}&action=stop&worker_id=${workerId}&worker_type=${encodeURIComponent(workerType)}`,
+          { method: "POST" }
+        );
+
+        if (!response.ok) {
+          throw new Error("Stop request failed");
+        }
+
+        button.textContent = "Stop signal sent";
+      } catch (error) {
+        button.textContent = "Failed — retry";
+        button.disabled = false;
+      }
+    }
+
+    function setConnectionStatus(connected, label) {
+      $("status-dot").className = connected ? "status-dot" : "status-dot error";
+      $("status-text").textContent = label;
+    }
+
+    function formatNumber(value) {
+      if (value === null || value === undefined || value === "") return "0";
+      return Number(value).toLocaleString();
+    }
+
+    function showError(message) {
+      const el = $("error-msg");
+      el.textContent = message;
+      el.style.display = "block";
+    }
+
+    function hideError() {
+      $("error-msg").style.display = "none";
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function escapeJsString(value) {
+      return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    }
+  </script>
+</body>
+</html>
